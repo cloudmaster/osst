@@ -1,0 +1,7 @@
+<serviceagents service="TelekomCloud">
+ <framework name="osst">
+  <signup>
+    <agent>http://localhost/agents/TelekomCloud.pm</agent>
+  </signup>
+ </framework>
+</serviceagents>

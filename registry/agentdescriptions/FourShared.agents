@@ -1,0 +1,7 @@
+<serviceagents service="FourShared">
+ <framework name="osst">
+  <signup>
+    <agent>http://localhost/agents/FourShared.pm</agent>
+  </signup>
+ </framework>
+</serviceagents>

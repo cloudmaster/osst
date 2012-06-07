@@ -1,0 +1,529 @@
+#!/usr/bin/env perl
+#
+# Agent-based framework for automatic signups to online (cloud storage resource) service providers
+
+use strict;
+#use StorageSignupAgent;
+use Getopt::Long qw(:config no_auto_abbrev bundling no_ignore_case);
+
+use lib "code";
+use Identity;
+use Service;
+use Account;
+use Requirement;
+
+my $version = "0.0.1";
+
+my ($opt_help, $opt_version, $opt_config, $opt_agents, $opt_identities, $opt_debug, $opt_services, $opt_type, $opt_requirement);
+my $default_config = "osst.conf";
+my $default_agentsdir = "agents";
+my $default_identitiesvcf = "addressbook.vcf";
+my $default_servicesreg = "http://servomat.crowdserving.com:8080/Matchmaker/services/ClientAccess?wsdl";
+
+$opt_config = $default_config;
+
+my $options = GetOptions(
+	"h|help"	=> \$opt_help,
+	"v|version"	=> \$opt_version,
+	"d|debug"	=> \$opt_debug,
+	"c|config=s"	=> \$opt_config,
+	"r|requirement=s"	=> \$opt_requirement,
+	"a|agents:s"	=> \$opt_agents,
+	"i|identities:s"=> \$opt_identities,
+	"s|services:s"	=> \$opt_services,
+	"t|type=s"	=> \$opt_type
+);
+if(!$options){
+	exit 1;
+}
+
+if(defined($opt_agents) || $#ARGV >= 0){
+	if(!$opt_agents){
+		$opt_agents = $default_agentsdir;
+	}
+}
+
+if(defined($opt_identities) || $#ARGV >= 0){
+	if(!$opt_identities){
+		$opt_identities = $default_identitiesvcf;
+	}
+}
+
+if(defined($opt_services) || $#ARGV >= 0){
+	if(!$opt_services){
+		$opt_services = $default_servicesreg;
+	}
+}
+
+if($opt_help){
+	print "Online Services Signup Tool\n";
+	print "Copyright (C) 2011, 2012\n";
+	print "Published under 'GNU AGPLv3 or later' conditions\n";
+	print "\n";
+	print "Syntax: osst [options+commands] [<service/agent>=<identity>]...\n";
+	print "\n";
+	print "Parameters:\n";
+	print "[<service>=<identity>     ] Signup to service <service> with identity <identity> with appropriate agent\n";
+	print "\n";
+	print "Options:\n";
+	print "[-c | --config <file>     ] Configuration file (if not given, use default: $default_config)\n";
+	print "[-d | --debug             ] Switch on debugging messages\n";
+	print "[-t | --type <type>       ] Restrict services to be of type <type>, which can be an IRI\n";
+	print "[-r | --requirement <req> ] Requirements file with non-functional properties in INI format\n";
+	print "\n";
+	print "Commands:\n";
+	print "[-v | --version           ] Print version information\n";
+	print "[-a | --agents[=<dir>]    ] List all local agents (from directory <dir>; default: $default_agentsdir)\n";
+	print "[-i | --identities[=<vcf>]] List all identities (from vCard file <vcf>; default: $default_identitiesvcf)\n";
+	print "[-s | --services[=<reg>]  ] List all services and remote agents (from registry <reg>; default: $default_servicesreg)\n";
+	exit;
+}
+if($opt_version){
+	print "$version\n";
+	exit;
+}
+
+#use vars qw($httpuploaddir $uploaddir);
+eval{require $opt_config};
+if($@){
+	warn "Warning: Configuration file $opt_config not found or invalid.\n";
+}
+
+sub debug{
+	my $s = shift(@_);
+	if($opt_debug){
+		print $s;
+	}
+}
+
+sub show_agents{
+	my $agentsref = shift;
+	my @agents = @{$agentsref};
+
+	foreach my $agent(@agents){
+		eval{require $agent};
+		if($@){
+			die "Error: Agent $agent not found or invalid [$@].\n";
+		}
+		my $agentclass = $agent;
+		$agentclass =~ s/\.pm$//;
+
+		Identity::setup();
+
+		my $method = eval "&" . $agentclass . "::setup";
+		my $check = eval{defined($method)};
+		if($check){
+			eval $agentclass . "::setup();";
+			my $name = eval "\$" . $agentclass . "::name";
+			my $formurl = eval "\$" . $agentclass . "::formurl";
+			debug "=> $name [$formurl]\n";
+		}else{
+			debug "=> $agentclass (re-usable)\n";
+		}
+
+		my $identity = Identity->new;
+		eval $agentclass . "::setupidentity(\$identity);";
+
+		my ($index, @requests) = Identity::check($agentclass);
+		debug "   *** privacy index: $index%\n";
+	}
+}
+
+sub load_agents_internal{
+	my $agentsdir = shift(@_);
+
+	push @INC, $agentsdir;
+
+	my @agents = ();
+
+	opendir my $dh, $agentsdir;
+	foreach my $agent(readdir($dh)){
+		next if($agent =~ /^\./);
+		if(-d "$agentsdir/$agent"){
+			@agents = (@agents, load_agents_internal("$agentsdir/$agent"));
+		}else{
+			debug "-- $agent [$agentsdir]\n";
+			push @agents, $agent;
+		}
+	}
+	closedir $dh;
+
+	return @agents;
+}
+
+sub load_agents{
+	my $agentsdir = shift(@_);
+
+	debug "Loading agents from $agentsdir...\n";
+
+	if(!(-d $agentsdir)){
+		die "Error: Directory $agentsdir not readable.\n";
+	}
+
+	my @agents = load_agents_internal($agentsdir);
+
+	show_agents(\@agents);
+
+	return @agents;
+}
+
+sub uniqueidentity{
+	my $vcard = shift(@_);
+
+	my $uniqueid = $vcard->email;
+	if($uniqueid eq ""){
+		$uniqueid = $vcard->fullname;
+	}
+	if($uniqueid eq ""){
+		$uniqueid = $vcard->nickname;
+	}
+	$uniqueid =~ s/\ //g;
+	$uniqueid = lc($uniqueid);
+
+	return $uniqueid;
+}
+
+sub load_identities{
+	my $identitiesvcf = shift(@_);
+
+	debug "Loading identities from $identitiesvcf...\n";
+
+	#if(!(-f $identitiesvcf)){
+	#	print "Warning: Identity file not found, skipping.\n";
+	#	return;
+	#}
+
+	use Text::vCard::Addressbook;
+
+	my $ab = Text::vCard::Addressbook->new({'source_file' => $identitiesvcf});
+
+	my @identities = ();
+	foreach my $vcard($ab->vcards()){
+		debug "-- identity: " . uniqueidentity($vcard) . "\n";
+		debug "   + fullname: " . $vcard->fullname() . "\n";
+		debug "   + nickname: " . $vcard->nickname() . "\n";
+		debug "   + email: " . $vcard->email() . "\n";
+		debug "   + birthday: " . $vcard->birthday() . "\n";
+
+		my $birthday = $vcard->birthday;
+		my @bdayparts = split("-|T", $birthday);
+
+		my $identity = Identity->new;
+		$identity->{identity} = uniqueidentity($vcard);
+		$identity->{vcard_email} = $vcard->email;
+
+		my $addresses = $vcard->get({'node_type' => 'addresses'});
+		my $monikers = $vcard->get({'node_type' => 'moniker'});
+		#my @phonetypes = qw(work home);
+		#my $phones = $vcard->get({'node_type' => 'phones', 'types' => \@phonetypes});
+		my $phones = $vcard->get({'node_type' => 'phones'});
+
+		foreach my $moniker(@{$monikers}) {
+			$identity->{vcard_title} = $moniker->prefixes;
+			$identity->{vcard_firstname} = $moniker->given;
+			$identity->{vcard_lastname} = $moniker->family;
+		}
+		foreach my $address(@{$addresses}) {
+			$identity->{vcard_street} = $address->street;
+			$identity->{vcard_zipcode} = $address->post_code;
+			$identity->{vcard_city} = $address->city;
+		}
+		foreach my $phone(@{$phones}) {
+			my @phoneparts = split(" ", $phone->value);
+			$identity->{vcard_prefix} = join(" ", @phoneparts[-3,-2]);
+			$identity->{vcard_phone} = $phoneparts[-1];
+		}
+		$identity->{vcard_birthday} = $bdayparts[2];
+		$identity->{vcard_birthmonth} = $bdayparts[1];
+		$identity->{vcard_birthyear} = $bdayparts[0];
+
+		debug "   -> name: " . $identity->{vcard_title} . " " . $identity->{vcard_firstname} . " " . $identity->{vcard_lastname} . "\n";
+		debug "   -> birthday: " . $identity->{vcard_birthday} . "." . $identity->{vcard_birthmonth} . "." . $identity->{vcard_birthyear} . "\n";
+		debug "   -> address: " . $identity->{vcard_street} . ", " . $identity->{vcard_zipcode} . " " . $identity->{vcard_city} . "\n";
+		debug "   -> phone: (" . $identity->{vcard_prefix} . ") " . $identity->{vcard_phone} . "\n";
+
+		push @identities, $identity;
+	}
+
+	return @identities;
+}
+
+sub load_services{
+	my $servicesreg = shift(@_);
+
+	debug "Loading services from $servicesreg...\n";
+
+	use SOAP::Lite;
+
+	my $iri = $opt_type;
+	if(($iri) && !($iri =~ /#/)){
+		$iri = "http://localhost:8080/Matchmaker/ontologies/$opt_type.wsml#$opt_type";
+		debug "Info: Extending service type '$opt_type' to '$iri'\n";
+	}
+
+	my $reply = SOAP::Lite
+		-> service($servicesreg)
+		-> getWebServicesFiltered(undef, "", $iri);
+
+	use XML::XPath;
+	use XML::XPath::XMLParser;
+
+	my $ns = "http://www.example.org/response";
+
+	my $xp = XML::XPath->new(xml => $reply);
+	$xp->set_namespace("tns", $ns);
+
+	my $servicenodes = $xp->find("//tns:Service");
+	#my $servicenodes = $xp->find("//*[namespace-uri()='$ns' and local-part()='Service']");
+
+	my @services = ();
+
+	foreach my $servicenode($servicenodes->get_nodelist){
+		#debug XML::XPath::XMLParser::as_string($service) . "\n";
+
+		# FIXME: Subtree matching supposedly handled by context parameter '$service'?
+		my $servicestr = XML::XPath::XMLParser::as_string($servicenode);
+		$servicestr =~ s/<tns:Service>/<tns:Service xmlns:tns='$ns'>/g;
+		my $servicenode = XML::XPath->new(xml => $servicestr);
+		$servicenode->set_namespace("tns", $ns);
+
+		my $servicename = $servicenode->find("//tns:ServiceName/text()")->[0];
+		$servicename = XML::XPath::XMLParser::as_string($servicename);
+		debug "-- $servicename\n";
+
+		my $service = Service->new;
+		$service->{name} = $servicename;
+
+		my $desc = $servicenode->find("//tns:InterfaceDoc[tns:InterfaceDocType='AGENTS']/tns:InterfaceDocURL/text()")->[0];
+		if($desc){
+			my $agentdescription = XML::XPath::XMLParser::as_string($desc);
+			# FIXME: seems to be pre-quoted for browser use
+			$agentdescription =~ s/&amp;/&/;
+			debug "   + agent description: $agentdescription\n";
+			$service->{agentdescription} = $agentdescription;
+		}
+
+		push @services, $service;
+	}
+
+	return @services;
+}
+
+sub load_service_agentdescription{
+	my $selectedservice = shift(@_);
+
+	debug "Loading agent description for " . $selectedservice->{name} . "...\n";
+	if(!($selectedservice->{agentdescription})){
+		debug "Error: No agent description attached to service.\n";
+		return undef;
+	}
+
+	use LWP::Simple;
+
+	mkdir("agents/.cache");
+	my $agentdesc = "agents/.cache/" . $selectedservice->{name} . ".agents";
+
+	#debug ">>>MIRROR>>> " . $selectedservice->{agentdescription} . " >>> " . $agentdesc . "\n";
+
+	mirror($selectedservice->{agentdescription}, $agentdesc);
+
+	use XML::XPath;
+	use XML::XPath::XMLParser;
+
+	my $xp = XML::XPath->new(filename => $agentdesc);
+
+	my $agentnode = $xp->find("/serviceagents/framework[\@name='osst']/signup/agent/text()")->[0];
+	if(!$agentnode){
+		debug "Error: Download or interpretation of agent description failed.\n";
+		return undef;
+	}
+	my $agenturl = XML::XPath::XMLParser::as_string($agentnode);
+
+	my $agent = "agents/.cache/" . $selectedservice->{name} . ".pm";
+	if(is_error(mirror($agenturl, $agent))){
+		debug "Error: Download of agent failed.\n";
+		return undef;
+	}
+
+	return $agent;
+}
+
+#print "* X-Name: " . $StorageSignupAgent::name . "\n";
+#StorageSignupAgent::test();
+
+my @agents = ();
+my @identities = ();
+my @services = ();
+my %agentdescriptions = ();
+
+if($#ARGV >= 0 || $opt_agents){
+	@agents = load_agents($opt_agents);
+}
+if($#ARGV >= 0 || $opt_identities){
+	@identities = load_identities($opt_identities);
+}
+if($#ARGV >= 0 || $opt_services){
+	@services = load_services($opt_services);
+}
+
+if($#ARGV == -1){
+	if($opt_agents){
+		exit;
+	}
+
+	if($opt_identities){
+		exit;
+	}
+
+	if($opt_services){
+		exit;
+	}
+}
+
+if($opt_requirement){
+	debug "Loading requirements from $opt_requirement...\n";
+
+	my $req = Requirement::load($opt_requirement);
+
+	debug "=> Requirement loaded.\n";
+	debug "-- Domain: $req->{domain}\n";
+	my %x = %{$req->{properties}};
+	foreach my $k(keys(%x)){
+		debug "-- Property: $k\n";
+	}
+}
+
+foreach my $signup(@ARGV){
+	debug "Argument: $signup\n";
+	my ($servicename, $identityname) = split("=", $signup);
+	if($servicename && $identityname){
+		debug "Signup: $identityname @ $servicename\n";
+
+		my ($selectedidentity, $selectedagent, $selectedservice);
+
+		my $found = undef;
+		foreach my $identity(@identities){
+			if($identity->{identity} eq $identityname){
+				debug "=> Found identity: $identity->{vcard_email}\n";
+				$found = 1;
+				$selectedidentity = $identity;
+				last;
+			}
+		}
+		if(!$found){
+			die "Error: Requested identity not found.\n";
+		}
+
+		if(-f $servicename){
+			my $srv = Service::load($servicename);
+			debug "=> Service description (local) loaded.\n";
+			debug "-- Name: $srv->{name}\n";
+			debug "-- IRI: $srv->{iri}\n";
+			debug "-- Form URL: $srv->{formurl}\n";
+			$servicename =~ s/\.srv$//;
+			#if($srv->{name} ne ""){
+			#	$servicename = $srv->{name};
+			#}
+			$servicename =~ m/\/([^\/]+)$/;
+			$servicename = $1;
+			# FIXME: even when not using registry, offer somehow mapping from service to agent?
+			debug "=> Found local service description: $servicename\n";
+			$selectedservice = $srv;
+		}
+
+		$found = undef;
+		foreach my $agent(@agents){
+			$agent =~ s/\.pm$//;
+			if($agent eq $servicename){
+				debug "=> Found agent: $agent\n";
+				$found = 1;
+				$selectedagent = $agent;
+				if($selectedservice){
+					debug "Info: Loading agent $agent on demand.\n";
+					eval{require $agent . ".pm"};
+				}
+				last;
+			}
+		}
+		if(!$found){
+			debug "Info: Requested agent not found; querying service registry.\n";
+
+			foreach my $service(@services){
+				if($service->{name} eq $servicename){
+					debug "=> Found service: $servicename\n";
+					$found = 1;
+					$selectedservice = $service;
+					last;
+				}
+			}
+			if(!$found){
+				die "Error: Requested service/agent not found.\n";
+			}else{
+				my $agent = load_service_agentdescription($selectedservice);
+				if(!$agent){
+					# Error already printed.
+					exit 1;
+				}else{
+					debug "Info: Loading agent $agent.\n";
+					# FIXME: strip path or rather use push @INC...!
+					eval{require $agent};
+					$agent =~ s/\.pm$//;
+					$selectedagent = $agent;
+				}
+			}
+		}
+
+		debug "Info: Sign up with $selectedagent.\n";
+		my $agentclass = $selectedagent;
+
+		if($selectedservice){
+			debug "Info: Parametrise agent with service metadata.\n";
+			eval $agentclass . "::setupservice(\$selectedservice);";
+			if($@){
+				die "Error: Parametrisation setup failed [$@].\n";
+			}
+		}
+
+		my $formurl = eval "\$" . $agentclass . "::formurl";
+		if($formurl eq ""){
+			print "!!! URL of specific service required for this re-usable agent!\n";
+			my $url = <STDIN>;
+			chomp $url;
+			eval "\$" . $agentclass . "::formurl = '$url'";
+		}
+
+		eval $agentclass . "::setupidentity(\$selectedidentity);";
+		if($@){
+			die "Error: Identity setup failed [$@].\n";
+		}
+		my ($index, @requests) = Identity::check($agentclass);
+		if($#requests >= 0){
+			print "!!! Identity data required for this agent!\n";
+			foreach my $request(@requests){
+				print "!!! $request\n";
+				my $data = <STDIN>;
+				chomp $data;
+				my $idfield = $request;
+				$idfield =~ s/^id_/vcard_/;
+				$selectedidentity->{$idfield} = $data;
+			}
+			eval $agentclass . "::setupidentity(\$selectedidentity);";
+			my ($index, @requests) = Identity::check($agentclass);
+			debug "Info: Reloaded identity, remaining requests: $#requests.\n";
+		}
+
+		eval $agentclass . "::signup();";
+		if($@){
+			die "Error: Signup failed [$@].\n";
+		}
+
+		debug "Info: Signed up.\n";
+
+		my $accountfile = $agentclass . "0.account";
+
+		Account::store($agentclass, $accountfile);
+
+		debug "Info: Stored account data in $accountfile.\n";
+	}
+}
+

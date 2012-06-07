@@ -1,0 +1,38 @@
+OSST - The Online Service Signup Tool
+-------------------------------------
+
+OSST is a framework for automated account signups at online
+service providers. The scope is on everything-as-a-service.
+Examples are cloud computing services, e-mail and further
+communication, social networks, and basically all other
+domains as defined by e.g. the XaaS domain ontologies in
+WSMO4IoS: http://serviceplatform.org/wiki/WSMO4IoS
+
+All signups are bound to an identity which typically is retrieved from
+a vCard. Signups can have dependencies which together with
+the location of the signup agent code are described in *.agents
+description files.
+
+OSST is integrated with the ConQo semantic service registry
+(http://serviceplatform.org/wiki/ConQo) to retrieve new service
+descriptions for certain requirements and executable signup agents along
+with them.
+For less sophisticated requirements, it works on local INI-style service
+descriptions and directly on locally provided agents, though.
+
+Parameters which cannot be inferred from service descriptions and
+agents are prompted interactively from the user.
+
+The implementation of OSST requires Perl with the WWW::Mechanize,
+SOAP::Lite and Text::vCard modules, plus some implementation-specific
+modules: LWP::Simple, XML::XPath etc..
+
+How to use
+----------
+
+./osst --debug --services=http://localhost:8080/Matchmaker/services/ClientAccess?wsdl --type CloudStorage
+./osst --debug FourShared=myidentity
+./osst --debug registry/servicedescriptions/CloudStorage/FourShared.srv=myidentity
+
+./osst --help # for everything else
+

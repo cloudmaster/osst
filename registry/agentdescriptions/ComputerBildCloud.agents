@@ -1,0 +1,7 @@
+<serviceagents service="ComputerBildCloud">
+ <framework name="osst">
+  <signup>
+    <agent>http://localhost/agents/ComputerBildCloud.pm</agent>
+  </signup>
+ </framework>
+</serviceagents>

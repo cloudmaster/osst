@@ -1,0 +1,8 @@
+<serviceagents service="SafeSync" iri="http://localhost:8080/Matchmaker/ontologies/CloudStorage/safesync.wsml#">
+ <framework name="osst">
+  <signup>
+    <dependency domainiri="http://localhost:8080/Matchmaker/ontologies/Email.wsml#">
+    <agent>http://localhost/agents/SafeSync.pm</agent>
+  </signup>
+ </framework>
+</serviceagents>

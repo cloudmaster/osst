@@ -1,0 +1,7 @@
+<serviceagents service="StratoHiDrive">
+ <framework name="osst">
+  <signup>
+    <agent>http://localhost/agents/StratoHiDrive.pm</agent>
+  </signup>
+ </framework>
+</serviceagents>
