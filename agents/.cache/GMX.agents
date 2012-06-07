@@ -1,9 +1,0 @@
-<serviceagents service="TelekomCloud">
- <framework name="osst">
-  <signup>
-    <agent>http://directory.nubisave.org/agents/TelekomCloud.pm</agent>
-  </signup>
- </framework>
-</serviceagents>
-
-
